@@ -199,6 +199,8 @@ void MethodSwizzle(Class c, SEL originalSelector) {
 {
 }
 
+//This 'content-available'-capablefunction is only iOS-7+.
+//Older version does not have the fetchCompletionHandler argument.
 - (void)swizzled_application:(UIApplication *)application didReceiveRemoteNotification:(NSDictionary *)userInfo fetchCompletionHandler:(void (^)(UIBackgroundFetchResult result))handler
 {
     // Call existing method
@@ -209,6 +211,14 @@ void MethodSwizzle(Class c, SEL originalSelector) {
     [self handleRemoteNotification:application payload:notification];
 
     handler(UIBackgroundFetchResultNoData);
+    
+    // track analytics when the app was opened as a result of tapping a remote notification, either a new open or activation from background
+    if (application.applicationState == UIApplicationStateInactive) {
+        NSLog(@"Parse: sending tracked open! %@", userInfo);
+        //App was just brought from background to foreground, consider as 'opened by push notification'
+        [PFAnalytics trackAppOpenedWithRemoteNotificationPayload:userInfo];
+    }
+    
 }
 
 - (BOOL)noop_application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
@@ -240,6 +250,19 @@ void MethodSwizzle(Class c, SEL originalSelector) {
             [self handleRemoteNotification:application payload:notification];
         }
     }
+    
+    if(application.applicationState != UIApplicationStateBackground) {
+        //Track an app open here if we newly launch the app (wasn't running) with a push, unless 'content_available' was used to trigger
+        //a background push.  In that case, skip tracking here to avoid double counting app-open.
+        //This will also track normal app opens (non-push opens), for analysis in Parse.
+        BOOL preBackgroundPush = ![application respondsToSelector:@selector(backgroundRefreshStatus)];
+        BOOL oldPushHandlerOnly = ![self respondsToSelector:@selector(application:didReceiveRemoteNotification:fetchCompletionHandler:)];
+        BOOL noPushPayload = ![launchOptions objectForKey:UIApplicationLaunchOptionsRemoteNotificationKey];
+        if(preBackgroundPush || oldPushHandlerOnly || noPushPayload){
+            NSLog(@"Parse sending tracked open! %@", launchOptions);
+            [PFAnalytics trackAppOpenedWithLaunchOptions:launchOptions];
+        }
+    }
 
     return YES;
 }
@@ -259,11 +282,6 @@ void MethodSwizzle(Class c, SEL originalSelector) {
 }
 
 - (void)handleRemoteNotification:(UIApplication *)application payload:(NSMutableDictionary *)payload {
-
-    // track analytics when the app was opened as a result of tapping a remote notification
-    if (![[payload objectForKey:PPReceivedInForeground] boolValue]) {
-        [PFAnalytics trackAppOpenedWithRemoteNotificationPayload:payload];
-    }
 
     // send the callback to the webview
     if (ecb) {
